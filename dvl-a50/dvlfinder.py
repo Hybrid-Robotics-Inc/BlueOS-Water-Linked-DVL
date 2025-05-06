@@ -3,6 +3,7 @@ import time
 from typing import List, Optional
 
 import nmap3
+import urllib.request
 from loguru import logger
 
 from blueoshelper import request
@@ -16,7 +17,6 @@ def check_for_proper_dvl(ip: str) -> bool:
     except Exception as e:
         logger.debug(f"{ip} is not a dvl: {e}")
         return False
-    json.loads(request(url))
 
 
 def get_ips_wildcards(ips: List[str]):
@@ -25,14 +25,24 @@ def get_ips_wildcards(ips: List[str]):
 
 
 def find_the_dvl() -> Optional[str]:
+    # Try default IP first before network scan
+    default_ip = "192.168.2.95"
+    logger.info(f"Trying default DVL IP at {default_ip}...")
+    try:
+        with urllib.request.urlopen(f"http://{default_ip}/api/v1/about", timeout=2) as response:
+            if response.status == 200:
+                logger.info(f"DVL found at default IP: {default_ip}")
+                return default_ip
+    except Exception as e:
+        logger.debug(f"Default DVL IP not responding: {e}")
+
     # The dvl always reports 192.168.194.95 on mdns, so we need to take drastic measures.
     # Nmap to the rescue!
-
     nmap = nmap3.Nmap()
-    # generate the scan mask from our current ips
+
+    # Generate the scan mask from our current IPs
     networks = json.loads(request("http://host.docker.internal/cable-guy/v1.0/ethernet"))
     current_networks = [network["addresses"] for network in networks]
-    # this looks like [{'ip': '192.168.2.2', 'mode': 'server'}]
     current_ips = []
     for network in current_networks:
         for entry in network:
@@ -47,7 +57,7 @@ def find_the_dvl() -> Optional[str]:
             try:
                 results = nmap.scan_top_ports(ip, args="-p 80 --open")
             except nmap3.exceptions.NmapExecutionError as e:
-                logger.debug(f"error running nmap: {e}, trying again in 1 second")
+                logger.debug(f"Error running nmap: {e}, trying again in 1 second")
                 time.sleep(1)
         for result in results:
             if result in current_ips:
@@ -56,10 +66,11 @@ def find_the_dvl() -> Optional[str]:
                 continue
             candidates.append(result)
 
-    logger.info(f"candidates for being a dvl: {candidates}")
+    logger.info(f"Candidates for being a DVL: {candidates}")
 
     for candidate in candidates:
         if check_for_proper_dvl(candidate):
             logger.info(f"DVL found at {candidate}")
             return candidate
+
     return None
